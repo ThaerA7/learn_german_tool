@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dynamic Days Grid (No Build)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Tailwind (optional styling) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React + ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <!-- Babel for JSX in the browser -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Markdown renderer -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    .prose p { margin: 0.5rem 0; }
+    .prose h1, .prose h2, .prose h3 { font-weight: 600; margin-top: 1rem; }
+    .prose ul { list-style: disc; padding-left: 1.5rem; }
+    .prose ol { list-style: decimal; padding-left: 1.5rem; }
+    .prose code { background: #f1f5f9; padding: 0 .25rem; border-radius: .25rem; }
+    .prose pre { background: #0f172a; color: white; padding: .75rem; border-radius: .5rem; overflow:auto; }
+  </style>
+</head>
+<body class="bg-slate-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useEffect, useRef, useState } = React;
+
+    const MAX_PAGES = 51;
+    const AUTO_RELOCK_MS = 24 * 60 * 60 * 1000;
+    const ALLOWED_COLORS = ["#000000", "#FF0000", "#2196F3", "#008000"];
+
+    const cls = (...xs) => xs.filter(Boolean).join(" ");
+
+    function toast(msg) {
+      const el = document.createElement("div");
+      el.textContent = msg;
+      el.className =
+        "fixed left-1/2 -translate-x-1/2 bottom-6 z-[9999] rounded-xl bg-black/80 text-white px-4 py-2 text-sm shadow-lg";
+      document.body.appendChild(el);
+      setTimeout(() => {
+        el.style.transition = "opacity .25s ease";
+        el.style.opacity = "0";
+        setTimeout(() => el.remove(), 250);
+      }, 1400);
+    }
+
+    function downloadJson(filename, dataObj) {
+      const blob = new Blob([JSON.stringify(dataObj, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function openFilePickerJson() {
+      return new Promise((resolve, reject) => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".json,application/json";
+        input.onchange = async () => {
+          const file = input.files && input.files[0];
+          if (!file) return reject(new Error("No file selected"));
+          const text = await file.text();
+          try {
+            const json = JSON.parse(text);
+            resolve(json);
+          } catch (e) {
+            reject(e);
+          }
+        };
+        input.click();
+      });
+    }
+
+    function lsGet(key, fallback) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : fallback;
+      } catch (e) {
+        return fallback;
+      }
+    }
+    function lsSet(key, value) {
+      localStorage.setItem(key, JSON.stringify(value));
+    }
+
+    function loadDay(dayIndex) {
+      const pages = lsGet(`day_${dayIndex}_pages`, null);
+      const styles = lsGet(`day_${dayIndex}_styles`, null);
+      const locks = lsGet(`day_${dayIndex}_locks`, null);
+      return { pages, styles, locks };
+    }
+
+    function saveDay(dayIndex, payload) {
+      const pages = payload.pages;
+      const styles = payload.styles != null ? payload.styles : [];
+      const locks = payload.locks != null ? payload.locks : { page: [], fieldLocked: [] };
+      lsSet(`day_${dayIndex}_pages`, pages);
+      lsSet(`day_${dayIndex}_styles`, styles);
+      lsSet(`day_${dayIndex}_locks`, locks);
+    }
+
+    function ensureDayShape(dayIndex, state) {
+      let pages = state.pages;
+      let styles = state.styles;
+      let locks = state.locks;
+
+      if (!pages) pages = [[""]];
+      if (!locks) locks = { page: [], fieldLocked: [] };
+
+      while (locks.page.length < pages.length) {
+        locks.page.push({ locked: false, password: "", hint: "", lastUnlock: 0 });
+      }
+      while (locks.fieldLocked.length < pages.length) {
+        locks.fieldLocked.push([]);
+      }
+      for (let p = 0; p < pages.length; p++) {
+        while (locks.fieldLocked[p].length < pages[p].length) locks.fieldLocked[p].push(false);
+      }
+      if (!styles) styles = [];
+      return { pages, styles, locks };
+    }
+
+    function IconBtn(props) {
+      const { title, onClick, children, disabled } = props;
+      return (
+        <button
+          title={title}
+          onClick={onClick}
+          disabled={disabled}
+          className={cls(
+            "inline-flex items-center justify-center rounded-lg p-2 hover:bg-black/5 disabled:opacity-40 disabled:cursor-not-allowed"
+          )}
+        >
+          {children}
+        </button>
+      );
+    }
+
+    function PrimaryBtn(props) {
+      const { children, onClick, className, disabled } = props;
+      return (
+        <button
+          onClick={onClick}
+          disabled={disabled}
+          className={cls(
+            "px-4 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm disabled:opacity-40",
+            className
+          )}
+        >
+          {children}
+        </button>
+      );
+    }
+
+    function OutlineBtn(props) {
+      const { children, onClick, className, disabled } = props;
+      return (
+        <button
+          onClick={onClick}
+          disabled={disabled}
+          className={cls(
+            "px-4 py-2 rounded-xl border border-black/10 hover:bg-black/5 disabled:opacity-40",
+            className
+          )}
+        >
+          {children}
+        </button>
+      );
+    }
+
+    function GridManagerPage(props) {
+      const { onBack } = props;
+      const [items, setItems] = React.useState(() => lsGet("grid_manager_items", [
+        "Grid 1",
+        "Grid 2",
+        "Grid 3",
+        "Grid 4",
+      ]));
+
+      React.useEffect(() => lsSet("grid_manager_items", items), [items]);
+
+      function addItem() {
+        setItems(function(prev) { return prev.concat(["Grid " + (prev.length + 1)]); });
+      }
+      function removeAt(idx) {
+        setItems(function(prev) { return prev.filter(function(_, i) { return i !== idx; }); });
+      }
+      function editAt(idx) {
+        const next = prompt("Edit grid text", items[idx]);
+        if (next && next.trim()) {
+          setItems(function(prev) {
+            return prev.map(function(v, i) {
+              return i === idx ? next.trim() : v;
+            });
+          });
+        }
+      }
+
+      return (
+        <div className="min-h-screen bg-gradient-to-b from-white to-slate-50">
+          <header className="sticky top-0 z-10 backdrop-blur bg-white/70 border-b border-black/10">
+            <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-2">
+              <OutlineBtn onClick={onBack}>← Back</OutlineBtn>
+              <h1 className="text-xl font-semibold">Grid Manager</h1>
+              <div className="flex-1" />
+              <PrimaryBtn onClick={addItem}>Add New Grid</PrimaryBtn>
+            </div>
+          </header>
+
+          <main className="max-w-6xl mx-auto px-4 py-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+              {items.map(function(label, idx) {
+                return (
+                  <div
+                    key={idx}
+                    onClick={function() { editAt(idx); }}
+                    onContextMenu={function(e) {
+                      e.preventDefault();
+                      removeAt(idx);
+                    }}
+                    className="rounded-xl bg-blue-100 shadow-sm hover:shadow cursor-pointer select-none p-6 flex items-center justify-center text-center"
+                  >
+                    <span className="font-semibold text-slate-900">{label}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="mt-4 text-sm text-slate-500">Tip: right-click a tile to remove it.</p>
+          </main>
+        </div>
+      );
+    }
+
+    function DayTextPage(props) {
+      const { dayIndex, onBack } = props;
+      const [state, setState] = useState(function() { return ensureDayShape(dayIndex, loadDay(dayIndex)); });
+      const [currentPage, setCurrentPage] = useState(0);
+      const [isSearching, setIsSearching] = useState(false);
+      const [query, setQuery] = useState("");
+      const [searchResults, setSearchResults] = useState([]);
+      const [currentResultIdx, setCurrentResultIdx] = useState(0);
+
+      const [editable, setEditable] = useState(function() {
+        return state.pages.map(function(fields) { return fields.map(function() { return false; }); });
+      });
+
+      const textRefs = useRef([]);
+      if (textRefs.current.length !== state.pages.length) {
+        textRefs.current = state.pages.map(function(fields, p) {
+          return (textRefs.current[p] || []).slice(0, fields.length);
+        });
+      }
+
+      useEffect(function() {
+        saveDay(dayIndex, state);
+      }, [dayIndex, state]);
+
+      useEffect(function() {
+        setState(function(prev) {
+          const next = ensureDayShape(dayIndex, prev);
+          for (let p = 0; p < next.pages.length; p++) {
+            const meta = next.locks.page[p];
+            if (!meta) continue;
+            if (!meta.locked && meta.lastUnlock) {
+              if (Date.now() - meta.lastUnlock >= AUTO_RELOCK_MS) {
+                meta.locked = true;
+                meta.lastUnlock = 0;
+              }
+            }
+          }
+          return Object.assign({}, next);
+        });
+      }, [dayIndex]);
+
+      function addPage() {
+        setState(function(prev) {
+          if (prev.pages.length >= MAX_PAGES) {
+            toast("Maximum pages reached");
+            return prev;
+          }
+          const pages = prev.pages.concat([[""]]);
+          const locks = {
+            page: prev.locks.page.concat([{ locked: false, password: "", hint: "", lastUnlock: 0 }]),
+            fieldLocked: prev.locks.fieldLocked.concat([[false]]),
+          };
+          const styles = (prev.styles || []).slice();
+          setEditable(function(old) { return old.concat([[false]]); });
+          return { pages: pages, locks: locks, styles: styles };
+        });
+        setCurrentPage(function(i) { return i + 1; });
+      }
+
+      function deleteCurrentPage() {
+        setState(function(prev) {
+          if (prev.pages.length <= 1) {
+            toast("Cannot delete last page");
+            return prev;
+          }
+          const p = currentPage;
+          const pages = prev.pages.filter(function(_, i) { return i !== p; });
+          const locks = {
+            page: prev.locks.page.filter(function(_, i) { return i !== p; }),
+            fieldLocked: prev.locks.fieldLocked.filter(function(_, i) { return i !== p; }),
+          };
+          const styles = prev.styles;
+          setEditable(function(old) { return old.filter(function(_, i) { return i !== p; }); });
+          const nextIndex = Math.min(pages.length - 1, p);
+          setCurrentPage(nextIndex);
+          return { pages: pages, locks: locks, styles: styles };
+        });
+      }
+
+      function addTextField() {
+        setState(function(prev) {
+          const pages = prev.pages.map(function(fields, i) {
+            return i === currentPage ? fields.concat([""]) : fields;
+          });
+          const locks = {
+            page: prev.locks.page,
+            fieldLocked: prev.locks.fieldLocked.map(function(arr, i) {
+              return i === currentPage ? arr.concat([false]) : arr;
+            }),
+          };
+          const styles = prev.styles;
+          setEditable(function(old) {
+            return old.map(function(row, i) {
+              return i === currentPage ? row.concat([false]) : row;
+            });
+          });
+          return { pages: pages, locks: locks, styles: styles };
+        });
+      }
+
+      function deleteTextField(pageIdx, fieldIdx) {
+        setState(function(prev) {
+          const pages = prev.pages.map(function(fields, i) {
+            return i === pageIdx ? fields.filter(function(_, j) { return j !== fieldIdx; }) : fields;
+          });
+          const locks = {
+            page: prev.locks.page,
+            fieldLocked: prev.locks.fieldLocked.map(function(arr, i) {
+              return i === pageIdx ? arr.filter(function(_, j) { return j !== fieldIdx; }) : arr;
+            }),
+          };
+          const styles = prev.styles;
+          setEditable(function(old) {
+            return old.map(function(row, i) {
+              return i === pageIdx ? row.filter(function(_, j) { return j !== fieldIdx; }) : row;
+            });
+          });
+          return { pages: pages, locks: locks, styles: styles };
+        });
+      }
+
+      function toggleEdit(p, f) {
+        if (state.locks.fieldLocked[p][f]) return;
+        setEditable(function(old) {
+          return old.map(function(row, i) {
+            return i === p ? row.map(function(v, j) { return j === f ? !v : false; }) : row;
+          });
+        });
+      }
+
+      function toggleFieldLock(p, f) {
+        setEditable(function(old) {
+          return old.map(function(row, i) {
+            return i === p ? row.map(function(v, j) { return j === f ? false : v; }) : row;
+          });
+        });
+        setState(function(prev) {
+          const locks = {
+            page: prev.locks.page,
+            fieldLocked: prev.locks.fieldLocked.map(function(arr, i) {
+              return i === p ? arr.map(function(v, j) { return j === f ? !v : v; }) : arr;
+            }),
+          };
+          return Object.assign({}, prev, { locks: locks });
+        });
+      }
+
+      function updateField(p, f, val) {
+        setState(function(prev) {
+          const pages = prev.pages.map(function(fields, i) {
+            return i === p ? fields.map(function(t, j) { return j === f ? val : t; }) : fields;
+          });
+          return Object.assign({}, prev, { pages: pages });
+        });
+      }
+
+      async function sendClipboardToPage51() {
+        try {
+          const text = await navigator.clipboard.readText();
+          if (!text || !text.trim()) {
+            toast("No text in clipboard");
+            return;
+          }
+          setState(function(prev) {
+            const pages = prev.pages.slice();
+            while (pages.length < 51) pages.push([""]);
+            const p = 50;
+            if (pages[p].length === 0) pages[p] = [""];
+            const cur = pages[p][0] || "";
+            pages[p][0] = cur ? (cur + ", " + text.trim()) : text.trim();
+            return Object.assign({}, prev, { pages: pages });
+          });
+          toast("Clipboard text sent to page 51");
+        } catch (e) {
+          toast("Clipboard access was blocked by the browser");
+        }
+      }
+
+      function lockCurrentPage() {
+        const pwd = prompt("Set password for this page:");
+        if (!pwd) {
+          toast("Password cannot be empty");
+          return;
+        }
+        const hint = prompt("Hint (optional):") || "";
+        setState(function(prev) {
+          const locks = Object.assign({}, prev.locks);
+          locks.page[currentPage] = { locked: true, password: pwd, hint: hint, lastUnlock: 0 };
+          return Object.assign({}, prev, { locks: locks });
+        });
+      }
+
+      function attemptUnlock(pageIdx) {
+        const meta = state.locks.page[pageIdx];
+        const pwd = prompt("Enter password" + (meta && meta.hint ? (" (hint: " + meta.hint + ")") : ""));
+        if (pwd === null) return;
+        if (pwd === (meta && meta.password ? meta.password : "")) {
+          setState(function(prev) {
+            const locks = Object.assign({}, prev.locks);
+            locks.page[pageIdx] = Object.assign({}, locks.page[pageIdx], { locked: false, lastUnlock: Date.now() });
+            return Object.assign({}, prev, { locks: locks });
+          });
+        } else {
+          toast("Incorrect password");
+        }
+      }
+
+      function performSearch(q) {
+        const num = Number(q);
+        if (!Number.isNaN(num) && String(num) === q.trim()) {
+          const idx = num - 1;
+          if (idx >= 0 && idx < state.pages.length) {
+            setCurrentPage(idx);
+          } else {
+            toast("Page " + num + " not found");
+          }
+          return;
+        }
+
+        const results = [];
+        if (q.trim()) {
+          for (let p = 0; p < state.pages.length; p++) {
+            const meta = state.locks.page[p];
+            if (meta && meta.locked) continue;
+            for (let f = 0; f < state.pages[p].length; f++) {
+              const txt = state.pages[p][f] || "";
+              let start = 0;
+              const low = txt.toLowerCase();
+              const qlow = q.toLowerCase();
+              while (true) {
+                const at = low.indexOf(qlow, start);
+                if (at === -1) break;
+                results.push({ pageIndex: p, fieldIndex: f, matchStart: at, matchEnd: at + q.length });
+                start = at + q.length;
+              }
+            }
+          }
+        }
+
+        setSearchResults(results);
+        if (results.length) {
+          goToSearchResult(0, results);
+        } else if (q.trim()) {
+          toast('No results for "' + q + '"');
+        }
+      }
+
+      function goToSearchResult(nextIdx, results) {
+        if (!results) results = searchResults;
+        if (!results.length) return;
+        const r = results[nextIdx];
+        setCurrentPage(r.pageIndex);
+        if (!state.locks.fieldLocked[r.pageIndex][r.fieldIndex]) {
+          setEditable(function(old) {
+            return old.map(function(row, i) {
+              return i === r.pageIndex ? row.map(function(v, j) { return j === r.fieldIndex ? true : false; }) : row;
+            });
+          });
+        }
+        setTimeout(function() {
+          const el = textRefs.current && textRefs.current[r.pageIndex] && textRefs.current[r.pageIndex][r.fieldIndex];
+          if (el && el.setSelectionRange) {
+            try {
+              el.focus();
+              el.setSelectionRange(r.matchStart, r.matchEnd);
+            } catch (e) {}
+          }
+        }, 0);
+        setCurrentResultIdx(nextIdx);
+      }
+
+      function goPrevResult() {
+        if (!searchResults.length) return;
+        const n = (currentResultIdx - 1 + searchResults.length) % searchResults.length;
+        goToSearchResult(n);
+      }
+      function goNextResult() {
+        if (!searchResults.length) return;
+        const n = (currentResultIdx + 1) % searchResults.length;
+        goToSearchResult(n);
+      }
+
+      const pageLocked = state.locks.page[currentPage] && state.locks.page[currentPage].locked;
+
+      return (
+        <div className="min-h-screen bg-gradient-to-b from-white to-slate-50">
+          <header className="sticky top-0 z-10 backdrop-blur bg-white/70 border-b border-black/10">
+            <div className="max-w-6xl mx-auto px-3 py-2 flex items-center gap-2">
+              <OutlineBtn onClick={onBack}>← Back</OutlineBtn>
+
+              <div className="flex-1 flex items-center justify-center">
+                {isSearching ? (
+                  <div className="w-full max-w-xl flex items-center gap-2">
+                    <input
+                      autoFocus
+                      className="flex-1 rounded-xl border border-black/10 px-3 py-2 outline-none"
+                      placeholder="Search… or enter page"
+                      value={query}
+                      onChange={function(e) { setQuery(e.target.value); }}
+                      onKeyDown={function(e) {
+                        if (e.key === "Enter") performSearch(query);
+                      }}
+                    />
+                    <PrimaryBtn onClick={function() { performSearch(query); }}>Search</PrimaryBtn>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <IconBtn title="Clipboard → page 51" onClick={sendClipboardToPage51}>
+                      <span className="i">📋</span>
+                    </IconBtn>
+                    <div className="text-lg font-semibold">Page {currentPage + 1} / {state.pages.length}</div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1">
+                {isSearching && searchResults.length > 1 && (
+                  <>
+                    <IconBtn title="Prev" onClick={goPrevResult}>◀</IconBtn>
+                    <IconBtn title="Next" onClick={goNextResult}>▶</IconBtn>
+                  </>
+                )}
+                <IconBtn
+                  title={isSearching ? "Close search" : "Search"}
+                  onClick={function() {
+                    if (isSearching) {
+                      setIsSearching(false);
+                      setQuery("");
+                      setSearchResults([]);
+                    } else {
+                      setIsSearching(true);
+                    }
+                  }}
+                >
+                  🔍
+                </IconBtn>
+                {!isSearching && (
+                  <IconBtn title="Add page" onClick={addPage}>➕</IconBtn>
+                )}
+              </div>
+            </div>
+          </header>
+
+          <main className="max-w-5xl mx-auto px-3 py-4">
+            {pageLocked ? (
+              <div className="flex items-center justify-center py-24">
+                <div className="rounded-2xl border border-black/10 shadow p-8 text-center bg-white">
+                  <div className="text-6xl">🔒</div>
+                  <div className="mt-4 text-xl font-semibold">This page is locked</div>
+                  {state.locks.page[currentPage] && state.locks.page[currentPage].hint ? (
+                    <div className="mt-2 italic text-slate-600">Hint: {state.locks.page[currentPage].hint}</div>
+                  ) : null}
+                  <PrimaryBtn className="mt-6" onClick={function() { attemptUnlock(currentPage); }}>
+                    Unlock
+                  </PrimaryBtn>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {state.pages[currentPage].map(function(text, fIdx) {
+                  const isLocked = state.locks.fieldLocked[currentPage][fIdx];
+                  const isEdit = editable[currentPage] && editable[currentPage][fIdx];
+
+                  return (
+                    <div key={fIdx} className="rounded-xl border border-black/10 bg-white shadow-sm p-3">
+                      <div className="flex items-center justify-end gap-1">
+                        <IconBtn title="Clipboard → page 51" onClick={sendClipboardToPage51}>📋</IconBtn>
+                        <IconBtn title="Delete field" onClick={function() { deleteTextField(currentPage, fIdx); }}>🗑️</IconBtn>
+                        <IconBtn title="Edit field" onClick={function() { if (!isLocked) toggleEdit(currentPage, fIdx); }}>
+                          ✏️
+                        </IconBtn>
+                        <IconBtn
+                          title={isLocked ? "Unlock field" : "Lock field"}
+                          onClick={function() { toggleFieldLock(currentPage, fIdx); }}
+                        >
+                          {isLocked ? "🔒" : "🔓"}
+                        </IconBtn>
+                      </div>
+
+                      {isEdit ? (
+                        <textarea
+                          ref={function(el) {
+                            textRefs.current[currentPage] = textRefs.current[currentPage] || [];
+                            textRefs.current[currentPage][fIdx] = el;
+                          }}
+                          value={text}
+                          onChange={function(e) { updateField(currentPage, fIdx, e.target.value); }}
+                          className="w-full min-h-[120px] rounded-lg outline-none resize-y px-3 py-2"
+                          style={{ color: ALLOWED_COLORS[0], fontSize: 16 }}
+                          placeholder="Write Markdown…"
+                        />
+                      ) : (
+                        <div
+                          className="prose max-w-none"
+                          dangerouslySetInnerHTML={{ __html: (window.marked ? window.marked.parse(text || "") : (text || "")) }}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="mt-6 flex items-center justify-center gap-3">
+              <PrimaryBtn onClick={addTextField}>Add Text</PrimaryBtn>
+              <OutlineBtn onClick={deleteCurrentPage}>Delete</OutlineBtn>
+              {pageLocked ? (
+                <PrimaryBtn onClick={function() { attemptUnlock(currentPage); }}>Unlock</PrimaryBtn>
+              ) : (
+                <OutlineBtn onClick={lockCurrentPage}>Lock</OutlineBtn>
+              )}
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    function DayGridPage(props) {
+      const { onOpenDay, onOpenGridManager } = props;
+      const [days, setDays] = useState(function() {
+        const saved = lsGet("days_names", null);
+        if (Array.isArray(saved) && saved.length) return saved;
+        const arr = [];
+        for (let i = 0; i < 150; i++) arr.push("Day " + (i + 1));
+        return arr;
+      });
+
+      useEffect(function() { lsSet("days_names", days); }, [days]);
+
+      function addNewDay() {
+        setDays(function(prev) { return prev.concat(["Day " + (prev.length + 1)]); });
+      }
+
+      function editDayName(idx) {
+        const next = prompt("Edit Day name", days[idx]);
+        if (next && next.trim()) {
+          setDays(function(prev) {
+            return prev.map(function(v, i) { return i === idx ? next.trim() : v; });
+          });
+        }
+      }
+
+      async function collectAllData() {
+        const all = {};
+        for (let day = 1; day <= days.length; day++) {
+          const data = ensureDayShape(day, loadDay(day));
+          all["day_" + day] = { pages: data.pages, styles: data.styles, locks: data.locks };
+        }
+        return all;
+      }
+
+      async function exportAll() {
+        const data = await collectAllData();
+        downloadJson("all_day_data.json", data);
+        toast("Exported all data");
+      }
+
+      async function importAll() {
+        try {
+          const data = await openFilePickerJson();
+          if (!data || typeof data !== "object") throw new Error("Invalid JSON");
+
+          const entries = Object.entries(data);
+          for (let i = 0; i < entries.length; i++) {
+            const pair = entries[i];
+            const k = pair[0];
+            const v = pair[1];
+            if (k.indexOf("day_") !== 0) continue;
+            const num = k.split("_")[1];
+            const day = Number(num);
+            if (!Number.isFinite(day)) continue;
+            const fixed = ensureDayShape(day, v || {});
+            saveDay(day, fixed);
+          }
+
+          let maxDay = 0;
+          for (let i = 0; i < entries.length; i++) {
+            const k = entries[i][0];
+            if (k.indexOf("day_") === 0) {
+              const n = Number(k.split("_")[1]);
+              if (n > maxDay) maxDay = n;
+            }
+          }
+          if (maxDay > days.length) {
+            setDays(function(prev) {
+              const copy = prev.slice();
+              for (let i = prev.length; i < maxDay; i++) copy.push("Day " + (i + 1));
+              return copy;
+            });
+          }
+
+          toast("Data imported successfully");
+        } catch (e) {
+          toast("Error importing: " + (e && e.message ? e.message : e));
+        }
+      }
+
+      return (
+        <div className="min-h-screen bg-gradient-to-b from-white to-slate-50">
+          <header className="sticky top-0 z-10 backdrop-blur bg-white/70 border-b border-black/10">
+            <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-2">
+              <h1 className="text-xl font-semibold">Dynamic Days Grid</h1>
+              <div className="flex-1" />
+              <IconBtn title="Export All Data" onClick={exportAll}>⬇️</IconBtn>
+              <IconBtn title="Import All Data" onClick={importAll}>⬆️</IconBtn>
+            </div>
+          </header>
+
+          <main className="max-w-6xl mx-auto px-4 py-6">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+              {days.map(function(label, idx) {
+                return (
+                  <div
+                    key={idx}
+                    className="rounded-xl bg-purple-100 shadow-sm hover:shadow cursor-pointer select-none p-6 flex items-center justify-center text-center"
+                    onClick={function() { onOpenDay(idx + 1); }}
+                    onContextMenu={function(e) {
+                      e.preventDefault();
+                      editDayName(idx);
+                    }}
+                    title="Right-click to rename"
+                  >
+                    <span className="font-semibold text-slate-900">{label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </main>
+
+          <footer className="fixed left-0 right-0 bottom-0">
+            <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+              <PrimaryBtn onClick={onOpenGridManager}>Switch to Grid Manager</PrimaryBtn>
+              <PrimaryBtn onClick={addNewDay}>Add New Day</PrimaryBtn>
+            </div>
+          </footer>
+        </div>
+      );
+    }
+
+    function App() {
+      const [view, setView] = useState({ name: "grid" });
+
+      return (
+        <div className="font-[system-ui] text-slate-900">
+          {view.name === "grid" && (
+            <DayGridPage
+              onOpenDay={function(idx) { setView({ name: "day", dayIndex: idx }); }}
+              onOpenGridManager={function() { setView({ name: "gridmgr" }); }}
+            />
+          )}
+          {view.name === "day" && (
+            <DayTextPage dayIndex={view.dayIndex} onBack={function() { setView({ name: "grid" }); }} />
+          )}
+          {view.name === "gridmgr" && (
+            <GridManagerPage onBack={function() { setView({ name: "grid" }); }} />
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
