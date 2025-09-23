@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Dynamic Days Grid (No Build)</title>
+  <title>Dynamic Days Grid (No Build) — with GitHub Gist Sync</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <!-- Tailwind (optional styling) -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -28,10 +28,21 @@
   <script type="text/babel">
     const { useEffect, useRef, useState } = React;
 
+    /*****************
+     * App Constants *
+     *****************/
     const MAX_PAGES = 51;
     const AUTO_RELOCK_MS = 24 * 60 * 60 * 1000;
     const ALLOWED_COLORS = ["#000000", "#FF0000", "#2196F3", "#008000"];
 
+    // GitHub/Gist constants
+    const GH_API = "https://api.github.com";
+    const GIST_FILENAME = "dynamic-days-backup.json"; // single-file backup
+    const GIST_DESC = "Dynamic Days Grid — cloud backup";
+
+    /*****************
+     * Utils & Toast *
+     *****************/
     const cls = (...xs) => xs.filter(Boolean).join(" ");
 
     function toast(msg) {
@@ -44,7 +55,7 @@
         el.style.transition = "opacity .25s ease";
         el.style.opacity = "0";
         setTimeout(() => el.remove(), 250);
-      }, 1400);
+      }, 1600);
     }
 
     function downloadJson(filename, dataObj) {
@@ -91,6 +102,9 @@
       localStorage.setItem(key, JSON.stringify(value));
     }
 
+    /**********************
+     * Local Data Helpers *
+     **********************/
     function loadDay(dayIndex) {
       const pages = lsGet(`day_${dayIndex}_pages`, null);
       const styles = lsGet(`day_${dayIndex}_styles`, null);
@@ -128,6 +142,86 @@
       return { pages, styles, locks };
     }
 
+    /**********************
+     * GitHub Gist Client *
+     **********************/
+    function ghGetToken() { return localStorage.getItem("gh_token") || ""; }
+    function ghSetToken(token) { localStorage.setItem("gh_token", token); }
+    function ghClearToken() { localStorage.removeItem("gh_token"); }
+
+    function ghGetGistId() { return localStorage.getItem("gh_gist_id") || ""; }
+    function ghSetGistId(id) { localStorage.setItem("gh_gist_id", id); }
+    function ghClearGistId() { localStorage.removeItem("gh_gist_id"); }
+
+    function ghHeaders() {
+      const token = ghGetToken();
+      const h = { "Accept": "application/vnd.github+json" };
+      if (token) h["Authorization"] = `Bearer ${token}`;
+      return h;
+    }
+
+    async function ghEnsureTokenInteractive() {
+      let token = ghGetToken();
+      if (!token) {
+        token = prompt(
+          "Enter your GitHub Personal Access Token (Fine-grained or classic) with 'gist' scope:\n\nTip: Create at https://github.com/settings/tokens"
+        ) || "";
+        if (!token.trim()) return null;
+        ghSetToken(token.trim());
+      }
+      // validate token by hitting /user (works for classic) or /gists (works for both)
+      const res = await fetch(`${GH_API}/gists?per_page=1`, { headers: ghHeaders() });
+      if (res.status === 401) {
+        ghClearToken();
+        toast("GitHub token invalid — please try again");
+        return null;
+      }
+      return ghGetToken();
+    }
+
+    async function ghCreateGist(contentObj) {
+      const body = {
+        description: GIST_DESC,
+        public: false,
+        files: { [GIST_FILENAME]: { content: JSON.stringify(contentObj, null, 2) } },
+      };
+      const res = await fetch(`${GH_API}/gists`, {
+        method: "POST",
+        headers: { ...ghHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`Create gist failed: ${res.status}`);
+      const data = await res.json();
+      return data.id;
+    }
+
+    async function ghPatchGist(gistId, contentObj) {
+      const body = {
+        description: GIST_DESC,
+        files: { [GIST_FILENAME]: { content: JSON.stringify(contentObj, null, 2) } },
+      };
+      const res = await fetch(`${GH_API}/gists/${gistId}`, {
+        method: "PATCH",
+        headers: { ...ghHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`Update gist failed: ${res.status}`);
+    }
+
+    async function ghReadGistFile(gistId) {
+      const res = await fetch(`${GH_API}/gists/${gistId}`, { headers: ghHeaders() });
+      if (!res.ok) throw new Error(`Load gist failed: ${res.status}`);
+      const data = await res.json();
+      const file = data.files && data.files[GIST_FILENAME];
+      if (!file || !file.raw_url) throw new Error("File not found in gist");
+      const raw = await fetch(file.raw_url);
+      if (!raw.ok) throw new Error("Failed to fetch gist raw content");
+      return await raw.json();
+    }
+
+    /********************
+     * UI Components    *
+     ********************/
     function IconBtn(props) {
       const { title, onClick, children, disabled } = props;
       return (
@@ -176,6 +270,9 @@
       );
     }
 
+    /*******************
+     * Grid Manager     *
+     *******************/
     function GridManagerPage(props) {
       const { onBack } = props;
       const [items, setItems] = React.useState(() => lsGet("grid_manager_items", [
@@ -188,19 +285,15 @@
       React.useEffect(() => lsSet("grid_manager_items", items), [items]);
 
       function addItem() {
-        setItems(function(prev) { return prev.concat(["Grid " + (prev.length + 1)]); });
+        setItems(prev => prev.concat(["Grid " + (prev.length + 1)]));
       }
       function removeAt(idx) {
-        setItems(function(prev) { return prev.filter(function(_, i) { return i !== idx; }); });
+        setItems(prev => prev.filter((_, i) => i !== idx));
       }
       function editAt(idx) {
         const next = prompt("Edit grid text", items[idx]);
         if (next && next.trim()) {
-          setItems(function(prev) {
-            return prev.map(function(v, i) {
-              return i === idx ? next.trim() : v;
-            });
-          });
+          setItems(prev => prev.map((v, i) => i === idx ? next.trim() : v));
         }
       }
 
@@ -217,21 +310,16 @@
 
           <main className="max-w-6xl mx-auto px-4 py-6">
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-              {items.map(function(label, idx) {
-                return (
-                  <div
-                    key={idx}
-                    onClick={function() { editAt(idx); }}
-                    onContextMenu={function(e) {
-                      e.preventDefault();
-                      removeAt(idx);
-                    }}
-                    className="rounded-xl bg-blue-100 shadow-sm hover:shadow cursor-pointer select-none p-6 flex items-center justify-center text-center"
-                  >
-                    <span className="font-semibold text-slate-900">{label}</span>
-                  </div>
-                );
-              })}
+              {items.map((label, idx) => (
+                <div
+                  key={idx}
+                  onClick={() => { editAt(idx); }}
+                  onContextMenu={(e) => { e.preventDefault(); removeAt(idx); }}
+                  className="rounded-xl bg-blue-100 shadow-sm hover:shadow cursor-pointer select-none p-6 flex items-center justify-center text-center"
+                >
+                  <span className="font-semibold text-slate-900">{label}</span>
+                </div>
+              ))}
             </div>
             <p className="mt-4 text-sm text-slate-500">Tip: right-click a tile to remove it.</p>
           </main>
@@ -239,32 +327,29 @@
       );
     }
 
+    /*******************
+     * Day Text Page    *
+     *******************/
     function DayTextPage(props) {
       const { dayIndex, onBack } = props;
-      const [state, setState] = useState(function() { return ensureDayShape(dayIndex, loadDay(dayIndex)); });
+      const [state, setState] = useState(() => ensureDayShape(dayIndex, loadDay(dayIndex)));
       const [currentPage, setCurrentPage] = useState(0);
       const [isSearching, setIsSearching] = useState(false);
       const [query, setQuery] = useState("");
       const [searchResults, setSearchResults] = useState([]);
       const [currentResultIdx, setCurrentResultIdx] = useState(0);
 
-      const [editable, setEditable] = useState(function() {
-        return state.pages.map(function(fields) { return fields.map(function() { return false; }); });
-      });
+      const [editable, setEditable] = useState(() => state.pages.map(fields => fields.map(() => false)));
 
       const textRefs = useRef([]);
       if (textRefs.current.length !== state.pages.length) {
-        textRefs.current = state.pages.map(function(fields, p) {
-          return (textRefs.current[p] || []).slice(0, fields.length);
-        });
+        textRefs.current = state.pages.map((fields, p) => (textRefs.current[p] || []).slice(0, fields.length));
       }
 
-      useEffect(function() {
-        saveDay(dayIndex, state);
-      }, [dayIndex, state]);
+      useEffect(() => { saveDay(dayIndex, state); }, [dayIndex, state]);
 
-      useEffect(function() {
-        setState(function(prev) {
+      useEffect(() => {
+        setState(prev => {
           const next = ensureDayShape(dayIndex, prev);
           for (let p = 0; p < next.pages.length; p++) {
             const meta = next.locks.page[p];
@@ -281,135 +366,98 @@
       }, [dayIndex]);
 
       function addPage() {
-        setState(function(prev) {
-          if (prev.pages.length >= MAX_PAGES) {
-            toast("Maximum pages reached");
-            return prev;
-          }
+        setState(prev => {
+          if (prev.pages.length >= MAX_PAGES) { toast("Maximum pages reached"); return prev; }
           const pages = prev.pages.concat([[""]]);
           const locks = {
             page: prev.locks.page.concat([{ locked: false, password: "", hint: "", lastUnlock: 0 }]),
             fieldLocked: prev.locks.fieldLocked.concat([[false]]),
           };
           const styles = (prev.styles || []).slice();
-          setEditable(function(old) { return old.concat([[false]]); });
-          return { pages: pages, locks: locks, styles: styles };
+          setEditable(old => old.concat([[false]]));
+          return { pages, locks, styles };
         });
-        setCurrentPage(function(i) { return i + 1; });
+        setCurrentPage(i => i + 1);
       }
 
       function deleteCurrentPage() {
-        setState(function(prev) {
-          if (prev.pages.length <= 1) {
-            toast("Cannot delete last page");
-            return prev;
-          }
+        setState(prev => {
+          if (prev.pages.length <= 1) { toast("Cannot delete last page"); return prev; }
           const p = currentPage;
-          const pages = prev.pages.filter(function(_, i) { return i !== p; });
+          const pages = prev.pages.filter((_, i) => i !== p);
           const locks = {
-            page: prev.locks.page.filter(function(_, i) { return i !== p; }),
-            fieldLocked: prev.locks.fieldLocked.filter(function(_, i) { return i !== p; }),
+            page: prev.locks.page.filter((_, i) => i !== p),
+            fieldLocked: prev.locks.fieldLocked.filter((_, i) => i !== p),
           };
           const styles = prev.styles;
-          setEditable(function(old) { return old.filter(function(_, i) { return i !== p; }); });
+          setEditable(old => old.filter((_, i) => i !== p));
           const nextIndex = Math.min(pages.length - 1, p);
           setCurrentPage(nextIndex);
-          return { pages: pages, locks: locks, styles: styles };
+          return { pages, locks, styles };
         });
       }
 
       function addTextField() {
-        setState(function(prev) {
-          const pages = prev.pages.map(function(fields, i) {
-            return i === currentPage ? fields.concat([""]) : fields;
-          });
+        setState(prev => {
+          const pages = prev.pages.map((fields, i) => i === currentPage ? fields.concat([""]) : fields);
           const locks = {
             page: prev.locks.page,
-            fieldLocked: prev.locks.fieldLocked.map(function(arr, i) {
-              return i === currentPage ? arr.concat([false]) : arr;
-            }),
+            fieldLocked: prev.locks.fieldLocked.map((arr, i) => i === currentPage ? arr.concat([false]) : arr),
           };
           const styles = prev.styles;
-          setEditable(function(old) {
-            return old.map(function(row, i) {
-              return i === currentPage ? row.concat([false]) : row;
-            });
-          });
-          return { pages: pages, locks: locks, styles: styles };
+          setEditable(old => old.map((row, i) => i === currentPage ? row.concat([false]) : row));
+          return { pages, locks, styles };
         });
       }
 
       function deleteTextField(pageIdx, fieldIdx) {
-        setState(function(prev) {
-          const pages = prev.pages.map(function(fields, i) {
-            return i === pageIdx ? fields.filter(function(_, j) { return j !== fieldIdx; }) : fields;
-          });
+        setState(prev => {
+          const pages = prev.pages.map((fields, i) => i === pageIdx ? fields.filter((_, j) => j !== fieldIdx) : fields);
           const locks = {
             page: prev.locks.page,
-            fieldLocked: prev.locks.fieldLocked.map(function(arr, i) {
-              return i === pageIdx ? arr.filter(function(_, j) { return j !== fieldIdx; }) : arr;
-            }),
+            fieldLocked: prev.locks.fieldLocked.map((arr, i) => i === pageIdx ? arr.filter((_, j) => j !== fieldIdx) : arr),
           };
           const styles = prev.styles;
-          setEditable(function(old) {
-            return old.map(function(row, i) {
-              return i === pageIdx ? row.filter(function(_, j) { return j !== fieldIdx; }) : row;
-            });
-          });
-          return { pages: pages, locks: locks, styles: styles };
+          setEditable(old => old.map((row, i) => i === pageIdx ? row.filter((_, j) => j !== fieldIdx) : row));
+          return { pages, locks, styles };
         });
       }
 
       function toggleEdit(p, f) {
         if (state.locks.fieldLocked[p][f]) return;
-        setEditable(function(old) {
-          return old.map(function(row, i) {
-            return i === p ? row.map(function(v, j) { return j === f ? !v : false; }) : row;
-          });
-        });
+        setEditable(old => old.map((row, i) => i === p ? row.map((v, j) => j === f ? !v : false) : row));
       }
 
       function toggleFieldLock(p, f) {
-        setEditable(function(old) {
-          return old.map(function(row, i) {
-            return i === p ? row.map(function(v, j) { return j === f ? false : v; }) : row;
-          });
-        });
-        setState(function(prev) {
+        setEditable(old => old.map((row, i) => i === p ? row.map((v, j) => j === f ? false : v) : row));
+        setState(prev => {
           const locks = {
             page: prev.locks.page,
-            fieldLocked: prev.locks.fieldLocked.map(function(arr, i) {
-              return i === p ? arr.map(function(v, j) { return j === f ? !v : v; }) : arr;
-            }),
+            fieldLocked: prev.locks.fieldLocked.map((arr, i) => i === p ? arr.map((v, j) => j === f ? !v : v) : arr),
           };
-          return Object.assign({}, prev, { locks: locks });
+          return Object.assign({}, prev, { locks });
         });
       }
 
       function updateField(p, f, val) {
-        setState(function(prev) {
-          const pages = prev.pages.map(function(fields, i) {
-            return i === p ? fields.map(function(t, j) { return j === f ? val : t; }) : fields;
-          });
-          return Object.assign({}, prev, { pages: pages });
+        setState(prev => {
+          const pages = prev.pages.map((fields, i) => i === p ? fields.map((t, j) => j === f ? val : t) : fields);
+          return Object.assign({}, prev, { pages });
         });
       }
 
       async function sendClipboardToPage51() {
         try {
           const text = await navigator.clipboard.readText();
-          if (!text || !text.trim()) {
-            toast("No text in clipboard");
-            return;
-          }
-          setState(function(prev) {
+          if (!text || !text.trim()) { toast("No text in clipboard"); return; }
+          setState(prev => {
             const pages = prev.pages.slice();
             while (pages.length < 51) pages.push([""]);
             const p = 50;
             if (pages[p].length === 0) pages[p] = [""];
             const cur = pages[p][0] || "";
             pages[p][0] = cur ? (cur + ", " + text.trim()) : text.trim();
-            return Object.assign({}, prev, { pages: pages });
+            return Object.assign({}, prev, { pages });
           });
           toast("Clipboard text sent to page 51");
         } catch (e) {
@@ -419,15 +467,12 @@
 
       function lockCurrentPage() {
         const pwd = prompt("Set password for this page:");
-        if (!pwd) {
-          toast("Password cannot be empty");
-          return;
-        }
+        if (!pwd) { toast("Password cannot be empty"); return; }
         const hint = prompt("Hint (optional):") || "";
-        setState(function(prev) {
+        setState(prev => {
           const locks = Object.assign({}, prev.locks);
-          locks.page[currentPage] = { locked: true, password: pwd, hint: hint, lastUnlock: 0 };
-          return Object.assign({}, prev, { locks: locks });
+          locks.page[currentPage] = { locked: true, password: pwd, hint, lastUnlock: 0 };
+          return Object.assign({}, prev, { locks });
         });
       }
 
@@ -436,10 +481,10 @@
         const pwd = prompt("Enter password" + (meta && meta.hint ? (" (hint: " + meta.hint + ")") : ""));
         if (pwd === null) return;
         if (pwd === (meta && meta.password ? meta.password : "")) {
-          setState(function(prev) {
+          setState(prev => {
             const locks = Object.assign({}, prev.locks);
             locks.page[pageIdx] = Object.assign({}, locks.page[pageIdx], { locked: false, lastUnlock: Date.now() });
-            return Object.assign({}, prev, { locks: locks });
+            return Object.assign({}, prev, { locks });
           });
         } else {
           toast("Incorrect password");
@@ -492,19 +537,12 @@
         const r = results[nextIdx];
         setCurrentPage(r.pageIndex);
         if (!state.locks.fieldLocked[r.pageIndex][r.fieldIndex]) {
-          setEditable(function(old) {
-            return old.map(function(row, i) {
-              return i === r.pageIndex ? row.map(function(v, j) { return j === r.fieldIndex ? true : false; }) : row;
-            });
-          });
+          setEditable(old => old.map((row, i) => i === r.pageIndex ? row.map((v, j) => j === r.fieldIndex ? true : false) : row));
         }
-        setTimeout(function() {
+        setTimeout(() => {
           const el = textRefs.current && textRefs.current[r.pageIndex] && textRefs.current[r.pageIndex][r.fieldIndex];
           if (el && el.setSelectionRange) {
-            try {
-              el.focus();
-              el.setSelectionRange(r.matchStart, r.matchEnd);
-            } catch (e) {}
+            try { el.focus(); el.setSelectionRange(r.matchStart, r.matchEnd); } catch (e) {}
           }
         }, 0);
         setCurrentResultIdx(nextIdx);
@@ -537,12 +575,10 @@
                       className="flex-1 rounded-xl border border-black/10 px-3 py-2 outline-none"
                       placeholder="Search… or enter page"
                       value={query}
-                      onChange={function(e) { setQuery(e.target.value); }}
-                      onKeyDown={function(e) {
-                        if (e.key === "Enter") performSearch(query);
-                      }}
+                      onChange={(e) => { setQuery(e.target.value); }}
+                      onKeyDown={(e) => { if (e.key === "Enter") performSearch(query); }}
                     />
-                    <PrimaryBtn onClick={function() { performSearch(query); }}>Search</PrimaryBtn>
+                    <PrimaryBtn onClick={() => { performSearch(query); }}>Search</PrimaryBtn>
                   </div>
                 ) : (
                   <div className="flex items-center gap-3">
@@ -563,14 +599,9 @@
                 )}
                 <IconBtn
                   title={isSearching ? "Close search" : "Search"}
-                  onClick={function() {
-                    if (isSearching) {
-                      setIsSearching(false);
-                      setQuery("");
-                      setSearchResults([]);
-                    } else {
-                      setIsSearching(true);
-                    }
+                  onClick={() => {
+                    if (isSearching) { setIsSearching(false); setQuery(""); setSearchResults([]); }
+                    else { setIsSearching(true); }
                   }}
                 >
                   🔍
@@ -591,14 +622,14 @@
                   {state.locks.page[currentPage] && state.locks.page[currentPage].hint ? (
                     <div className="mt-2 italic text-slate-600">Hint: {state.locks.page[currentPage].hint}</div>
                   ) : null}
-                  <PrimaryBtn className="mt-6" onClick={function() { attemptUnlock(currentPage); }}>
+                  <PrimaryBtn className="mt-6" onClick={() => { attemptUnlock(currentPage); }}>
                     Unlock
                   </PrimaryBtn>
                 </div>
               </div>
             ) : (
               <div className="space-y-4">
-                {state.pages[currentPage].map(function(text, fIdx) {
+                {state.pages[currentPage].map((text, fIdx) => {
                   const isLocked = state.locks.fieldLocked[currentPage][fIdx];
                   const isEdit = editable[currentPage] && editable[currentPage][fIdx];
 
@@ -606,13 +637,13 @@
                     <div key={fIdx} className="rounded-xl border border-black/10 bg-white shadow-sm p-3">
                       <div className="flex items-center justify-end gap-1">
                         <IconBtn title="Clipboard → page 51" onClick={sendClipboardToPage51}>📋</IconBtn>
-                        <IconBtn title="Delete field" onClick={function() { deleteTextField(currentPage, fIdx); }}>🗑️</IconBtn>
-                        <IconBtn title="Edit field" onClick={function() { if (!isLocked) toggleEdit(currentPage, fIdx); }}>
+                        <IconBtn title="Delete field" onClick={() => { deleteTextField(currentPage, fIdx); }}>🗑️</IconBtn>
+                        <IconBtn title="Edit field" onClick={() => { if (!isLocked) toggleEdit(currentPage, fIdx); }}>
                           ✏️
                         </IconBtn>
                         <IconBtn
                           title={isLocked ? "Unlock field" : "Lock field"}
-                          onClick={function() { toggleFieldLock(currentPage, fIdx); }}
+                          onClick={() => { toggleFieldLock(currentPage, fIdx); }}
                         >
                           {isLocked ? "🔒" : "🔓"}
                         </IconBtn>
@@ -620,12 +651,12 @@
 
                       {isEdit ? (
                         <textarea
-                          ref={function(el) {
+                          ref={(el) => {
                             textRefs.current[currentPage] = textRefs.current[currentPage] || [];
                             textRefs.current[currentPage][fIdx] = el;
                           }}
                           value={text}
-                          onChange={function(e) { updateField(currentPage, fIdx, e.target.value); }}
+                          onChange={(e) => { updateField(currentPage, fIdx, e.target.value); }}
                           className="w-full min-h-[120px] rounded-lg outline-none resize-y px-3 py-2"
                           style={{ color: ALLOWED_COLORS[0], fontSize: 16 }}
                           placeholder="Write Markdown…"
@@ -646,7 +677,7 @@
               <PrimaryBtn onClick={addTextField}>Add Text</PrimaryBtn>
               <OutlineBtn onClick={deleteCurrentPage}>Delete</OutlineBtn>
               {pageLocked ? (
-                <PrimaryBtn onClick={function() { attemptUnlock(currentPage); }}>Unlock</PrimaryBtn>
+                <PrimaryBtn onClick={() => { attemptUnlock(currentPage); }}>Unlock</PrimaryBtn>
               ) : (
                 <OutlineBtn onClick={lockCurrentPage}>Lock</OutlineBtn>
               )}
@@ -656,9 +687,12 @@
       );
     }
 
+    /*******************
+     * Day Grid Page    *
+     *******************/
     function DayGridPage(props) {
       const { onOpenDay, onOpenGridManager } = props;
-      const [days, setDays] = useState(function() {
+      const [days, setDays] = useState(() => {
         const saved = lsGet("days_names", null);
         if (Array.isArray(saved) && saved.length) return saved;
         const arr = [];
@@ -666,19 +700,17 @@
         return arr;
       });
 
-      useEffect(function() { lsSet("days_names", days); }, [days]);
+      const [syncing, setSyncing] = useState(false);
+      const hasToken = !!ghGetToken();
+      const boundGistId = ghGetGistId();
 
-      function addNewDay() {
-        setDays(function(prev) { return prev.concat(["Day " + (prev.length + 1)]); });
-      }
+      useEffect(() => { lsSet("days_names", days); }, [days]);
+
+      function addNewDay() { setDays(prev => prev.concat(["Day " + (prev.length + 1)])); }
 
       function editDayName(idx) {
         const next = prompt("Edit Day name", days[idx]);
-        if (next && next.trim()) {
-          setDays(function(prev) {
-            return prev.map(function(v, i) { return i === idx ? next.trim() : v; });
-          });
-        }
+        if (next && next.trim()) setDays(prev => prev.map((v, i) => i === idx ? next.trim() : v));
       }
 
       async function collectAllData() {
@@ -703,9 +735,7 @@
 
           const entries = Object.entries(data);
           for (let i = 0; i < entries.length; i++) {
-            const pair = entries[i];
-            const k = pair[0];
-            const v = pair[1];
+            const [k, v] = entries[i];
             if (k.indexOf("day_") !== 0) continue;
             const num = k.split("_")[1];
             const day = Number(num);
@@ -723,7 +753,7 @@
             }
           }
           if (maxDay > days.length) {
-            setDays(function(prev) {
+            setDays(prev => {
               const copy = prev.slice();
               for (let i = prev.length; i < maxDay; i++) copy.push("Day " + (i + 1));
               return copy;
@@ -736,35 +766,127 @@
         }
       }
 
+      // ===== Gist sync actions =====
+      async function saveToGist() {
+        try {
+          setSyncing(true);
+          const token = await ghEnsureTokenInteractive();
+          if (!token) { setSyncing(false); return; }
+          const payload = await collectAllData();
+          let gistId = ghGetGistId();
+          if (gistId) {
+            await ghPatchGist(gistId, payload);
+            toast("Cloud backup updated");
+          } else {
+            gistId = await ghCreateGist(payload);
+            ghSetGistId(gistId);
+            toast("Cloud backup created");
+          }
+        } catch (err) {
+          console.error(err);
+          toast("Save failed: " + (err && err.message ? err.message : err));
+        } finally {
+          setSyncing(false);
+        }
+      }
+
+      async function loadFromGist() {
+        try {
+          setSyncing(true);
+          const token = await ghEnsureTokenInteractive();
+          if (!token) { setSyncing(false); return; }
+          let gistId = ghGetGistId();
+          if (!gistId) {
+            gistId = prompt("Enter Gist ID to load from (leave empty to cancel):") || "";
+            if (!gistId) { setSyncing(false); return; }
+            ghSetGistId(gistId);
+          }
+          const data = await ghReadGistFile(gistId);
+          // reuse local import logic
+          const entries = Object.entries(data);
+          for (let i = 0; i < entries.length; i++) {
+            const [k, v] = entries[i];
+            if (k.indexOf("day_") !== 0) continue;
+            const num = k.split("_")[1];
+            const day = Number(num);
+            if (!Number.isFinite(day)) continue;
+            const fixed = ensureDayShape(day, v || {});
+            saveDay(day, fixed);
+          }
+          // ensure we have enough day tiles
+          let maxDay = 0;
+          for (let i = 0; i < entries.length; i++) {
+            const k = entries[i][0];
+            if (k.indexOf("day_") === 0) {
+              const n = Number(k.split("_")[1]);
+              if (n > maxDay) maxDay = n;
+            }
+          }
+          if (maxDay > days.length) {
+            setDays(prev => {
+              const copy = prev.slice();
+              for (let i = prev.length; i < maxDay; i++) copy.push("Day " + (i + 1));
+              return copy;
+            });
+          }
+          toast("Cloud data loaded");
+        } catch (err) {
+          console.error(err);
+          toast("Load failed: " + (err && err.message ? err.message : err));
+        } finally {
+          setSyncing(false);
+        }
+      }
+
+      function connectGitHub() {
+        ghEnsureTokenInteractive().then(tok => {
+          if (tok) toast("GitHub connected");
+        });
+      }
+
+      function disconnectGitHub() {
+        ghClearToken();
+        ghClearGistId();
+        toast("GitHub disconnected");
+      }
+
       return (
         <div className="min-h-screen bg-gradient-to-b from-white to-slate-50">
           <header className="sticky top-0 z-10 backdrop-blur bg-white/70 border-b border-black/10">
             <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-2">
               <h1 className="text-xl font-semibold">Dynamic Days Grid</h1>
               <div className="flex-1" />
+              {/* Local file backup */}
               <IconBtn title="Export All Data" onClick={exportAll}>⬇️</IconBtn>
               <IconBtn title="Import All Data" onClick={importAll}>⬆️</IconBtn>
+              <span className="mx-2 w-px h-6 bg-black/10" />
+              {/* Gist Cloud sync */}
+              <IconBtn title={boundGistId ? `Save to Gist (${boundGistId})` : "Save to Gist"} onClick={saveToGist} disabled={syncing}>💾</IconBtn>
+              <IconBtn title={boundGistId ? `Load from Gist (${boundGistId})` : "Load from Gist"} onClick={loadFromGist} disabled={syncing}>☁️</IconBtn>
+              {!hasToken ? (
+                <IconBtn title="Connect GitHub" onClick={connectGitHub}>🔑</IconBtn>
+              ) : (
+                <IconBtn title="Disconnect GitHub" onClick={disconnectGitHub}>🚫</IconBtn>
+              )}
             </div>
           </header>
 
           <main className="max-w-6xl mx-auto px-4 py-6">
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              {days.map(function(label, idx) {
-                return (
-                  <div
-                    key={idx}
-                    className="rounded-xl bg-purple-100 shadow-sm hover:shadow cursor-pointer select-none p-6 flex items-center justify-center text-center"
-                    onClick={function() { onOpenDay(idx + 1); }}
-                    onContextMenu={function(e) {
-                      e.preventDefault();
-                      editDayName(idx);
-                    }}
-                    title="Right-click to rename"
-                  >
-                    <span className="font-semibold text-slate-900">{label}</span>
-                  </div>
-                );
-              })}
+              {days.map((label, idx) => (
+                <div
+                  key={idx}
+                  className="rounded-xl bg-purple-100 shadow-sm hover:shadow cursor-pointer select-none p-6 flex items-center justify-center text-center"
+                  onClick={() => { onOpenDay(idx + 1); }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    editDayName(idx);
+                  }}
+                  title="Right-click to rename"
+                >
+                  <span className="font-semibold text-slate-900">{label}</span>
+                </div>
+              ))}
             </div>
           </main>
 
@@ -778,6 +900,9 @@
       );
     }
 
+    /********
+     * App  *
+     ********/
     function App() {
       const [view, setView] = useState({ name: "grid" });
 
@@ -785,15 +910,15 @@
         <div className="font-[system-ui] text-slate-900">
           {view.name === "grid" && (
             <DayGridPage
-              onOpenDay={function(idx) { setView({ name: "day", dayIndex: idx }); }}
-              onOpenGridManager={function() { setView({ name: "gridmgr" }); }}
+              onOpenDay={(idx) => { setView({ name: "day", dayIndex: idx }); }}
+              onOpenGridManager={() => { setView({ name: "gridmgr" }); }}
             />
           )}
           {view.name === "day" && (
-            <DayTextPage dayIndex={view.dayIndex} onBack={function() { setView({ name: "grid" }); }} />
+            <DayTextPage dayIndex={view.dayIndex} onBack={() => { setView({ name: "grid" }); }} />
           )}
           {view.name === "gridmgr" && (
-            <GridManagerPage onBack={function() { setView({ name: "grid" }); }} />
+            <GridManagerPage onBack={() => { setView({ name: "grid" }); }} />
           )}
         </div>
       );
