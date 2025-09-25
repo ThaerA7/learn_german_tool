@@ -129,7 +129,6 @@
         throw new Error(`Create failed (${res.status}): ${t || res.statusText}`);
       }
       const data = await res.json();
-      // v3 returns {metadata:{id:...}, record:{...}}
       const id = data?.metadata?.id;
       if (!id) throw new Error("Create succeeded but no Bin ID returned");
       return id;
@@ -158,7 +157,6 @@
       const key = getMasterKey();
       const url = `${JSONBIN_BASE}/b/${encodeURIComponent(binId)}/latest`;
       const headers = { };
-      // If bin is private, key needed; if public, it works without.
       if (key) headers["X-Master-Key"] = key;
       const res = await fetch(url, { headers });
       if (!res.ok) {
@@ -166,7 +164,6 @@
         throw new Error(`Read failed (${res.status}): ${t || res.statusText}`);
       }
       const data = await res.json();
-      // v3 returns {record:...}
       return data?.record;
     }
 
@@ -347,6 +344,37 @@
           return { ...next };
         });
       }, [dayIndex]);
+
+      // ---- NEW: page navigation helpers & keyboard shortcuts ----
+      function goToPage(n) {
+        setCurrentPage((prev) => {
+          const max = state.pages.length - 1;
+          if (!Number.isFinite(n)) return prev;
+          return Math.max(0, Math.min(max, n));
+        });
+      }
+      function goPrevPage() { goToPage(currentPage - 1); }
+      function goNextPage() { goToPage(currentPage + 1); }
+
+      useEffect(() => {
+        function onKey(e) {
+          // don't hijack typing in inputs/areas
+          const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
+          if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
+
+          if (e.key === "ArrowLeft") { e.preventDefault(); goPrevPage(); }
+          if (e.key === "ArrowRight") { e.preventDefault(); goNextPage(); }
+          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g") {
+            e.preventDefault();
+            const v = prompt(`Go to page (1 – ${state.pages.length})`, String(currentPage + 1));
+            const n = Number(v);
+            if (Number.isFinite(n)) goToPage(n - 1);
+          }
+        }
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }, [currentPage, state.pages.length]);
+      // -----------------------------------------------------------
 
       function addPage() {
         setState(prev => {
@@ -583,11 +611,37 @@
                     <PrimaryBtn onClick={() => performSearch(query)}>Search</PrimaryBtn>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-3">
-                    <IconBtn title="Clipboard → page 51" onClick={sendClipboardToPage51}>
-                      <span className="i">📋</span>
-                    </IconBtn>
-                    <div className="text-lg font-semibold">Page {currentPage + 1} / {state.pages.length}</div>
+                  <div className="flex items-center gap-2">
+                    <IconBtn title="Previous page (←)" onClick={goPrevPage}>◀</IconBtn>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-slate-600">Page</span>
+                      <input
+                        className="w-16 text-center rounded-lg border border-black/10 px-2 py-1 outline-none"
+                        value={String(currentPage + 1)}
+                        onChange={(e) => {
+                          const n = Number(e.target.value);
+                          if (Number.isFinite(n)) {
+                            const clamped = Math.max(1, Math.min(state.pages.length, n));
+                            setCurrentPage(clamped - 1);
+                          }
+                        }}
+                        onBlur={(e) => {
+                          let n = Number(e.target.value);
+                          if (!Number.isFinite(n)) n = currentPage + 1;
+                          n = Math.max(1, Math.min(state.pages.length, n));
+                          e.target.value = String(n);
+                          setCurrentPage(n - 1);
+                        }}
+                      />
+                      <span className="text-sm text-slate-600">/ {state.pages.length}</span>
+                    </div>
+
+                    <IconBtn title="Next page (→)" onClick={goNextPage}>▶</IconBtn>
+
+                    <div className="mx-2 h-6 w-px bg-black/10" />
+
+                    <IconBtn title="Clipboard → page 51" onClick={sendClipboardToPage51}>📋</IconBtn>
                   </div>
                 )}
               </div>
@@ -686,6 +740,12 @@
                 <OutlineBtn onClick={lockCurrentPage}>Lock</OutlineBtn>
               )}
             </div>
+
+            <div className="mt-4 flex items-center justify-center gap-3">
+              <OutlineBtn onClick={goPrevPage}>◀ Prev</OutlineBtn>
+              <PrimaryBtn onClick={addPage}>Add Page</PrimaryBtn>
+              <OutlineBtn onClick={goNextPage}>Next ▶</OutlineBtn>
+            </div>
           </main>
         </div>
       );
@@ -723,13 +783,11 @@
           const data = ensureDayShape(day, loadDay(day));
           all["day_" + day] = { pages: data.pages, styles: data.styles, locks: data.locks };
         }
-        // also keep names list so remote has your grid names
         all["_days_names"] = days;
         return all;
       }
 
       async function applyAllData(remote) {
-        // restore day blobs
         const entries = Object.entries(remote || {});
         for (let i = 0; i < entries.length; i++) {
           const [k, v] = entries[i];
@@ -739,12 +797,10 @@
           const fixed = ensureDayShape(num, v || {});
           saveDay(num, fixed);
         }
-        // restore names
         if (Array.isArray(remote?._days_names) && remote._days_names.length) {
           lsSet("days_names", remote._days_names);
           setDays(remote._days_names);
         } else {
-          // extend if needed to match highest day
           let maxDay = 0;
           for (const [k] of entries) {
             if (k.startsWith("day_")) {
@@ -840,7 +896,7 @@
         }
         try {
           setBusy(true);
-          const remote = await jsonbinRead(binId); // reads latest version
+          const remote = await jsonbinRead(binId);
           if (!remote || typeof remote !== "object") throw new Error("Empty or invalid cloud data");
           await applyAllData(remote);
           toast("Cloud load complete");
