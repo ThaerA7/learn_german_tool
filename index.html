@@ -374,6 +374,37 @@
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
       }, [currentPage, state.pages.length]);
+
+      // Exit edit mode if user clicks outside any active textarea on the current page
+useEffect(() => {
+  function onDocMouseDown(e) {
+    // if nothing is in edit on this page, ignore
+    const anyEditing = editable[currentPage]?.some(Boolean);
+    if (!anyEditing) return;
+
+    const refs = textRefs.current?.[currentPage] || [];
+    let clickedInsideAny = false;
+
+    for (const el of refs) {
+      if (!el) continue;
+      if (el === e.target || (el.contains && el.contains(e.target))) {
+        clickedInsideAny = true;
+        break;
+      }
+    }
+
+    if (!clickedInsideAny) {
+      // turn off edit for all fields on current page
+      setEditable(prev =>
+        prev.map((row, i) => (i === currentPage ? row.map(() => false) : row))
+      );
+    }
+  }
+
+  document.addEventListener("mousedown", onDocMouseDown);
+  return () => document.removeEventListener("mousedown", onDocMouseDown);
+}, [editable, currentPage]);
+
       // -----------------------------------------------------------
 
       function addPage() {
@@ -1003,3 +1034,4 @@
   </script>
 </body>
 </html>
+
