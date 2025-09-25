@@ -52,13 +52,7 @@
         setTimeout(() => el.remove(), 250);
       }, 1600);
     }
-function endEdit(p, f) {
-  setEditable(old =>
-    old.map((row, i) =>
-      i === p ? row.map((v, j) => (j === f ? false : v)) : row
-    )
-  );
-}
+
     function downloadJson(filename, dataObj) {
       const blob = new Blob([JSON.stringify(dataObj, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -715,18 +709,16 @@ function endEdit(p, f) {
 
                       {isEdit ? (
                         <textarea
-  ref={(el) => {
-    textRefs.current[currentPage] = textRefs.current[currentPage] || [];
-    textRefs.current[currentPage][fIdx] = el;
-  }}
-  value={text}
-  onChange={(e) => updateField(currentPage, fIdx, e.target.value)}
-  onBlur={() => endEdit(currentPage, fIdx)}   // ← add this line
-  className="w-full min-h-[120px] rounded-lg outline-none resize-y px-3 py-2"
-  style={{ color: ALLOWED_COLORS[0], fontSize: 16 }}
-  placeholder="Write Markdown…"
-/>
-
+                          ref={(el) => {
+                            textRefs.current[currentPage] = textRefs.current[currentPage] || [];
+                            textRefs.current[currentPage][fIdx] = el;
+                          }}
+                          value={text}
+                          onChange={(e) => updateField(currentPage, fIdx, e.target.value)}
+                          className="w-full min-h-[120px] rounded-lg outline-none resize-y px-3 py-2"
+                          style={{ color: ALLOWED_COLORS[0], fontSize: 16 }}
+                          placeholder="Write Markdown…"
+                        />
                       ) : (
                         <div
                           className="prose max-w-none"
@@ -1011,4 +1003,3 @@ function endEdit(p, f) {
   </script>
 </body>
 </html>
-
